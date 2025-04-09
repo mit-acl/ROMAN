@@ -74,8 +74,8 @@ If the pose is recorded using `/tf` topic rather tha a Pose or Odometry message,
 ```
 type: bag_tf
 path: <bag file path>
-parent: <parent frame_id>
-child: <child frame_id>
+parent_frame: <parent frame_id>
+child_frame: <child frame_id>
 inv: <Whether the transformation from /tf should be inverted or not>
 ```
 

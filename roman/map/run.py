@@ -4,7 +4,7 @@
 #
 # A class for processing ROMAN mapping
 #
-# Authors: Mason Peterson, Yulun Tian, Lucas Jia
+# Authors: Mason Peterson, Yulun Tian, Lucas Jia, Qingyuan Li
 #
 # Dec. 21, 2024
 #
@@ -30,6 +30,7 @@ from roman.viz import visualize_map_on_img, visualize_observations_on_img, visua
 from roman.map.mapper import Mapper
 from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.map.map import ROMANMap
+from roman.map.align_pointcloud import AlignPointCloud
 from roman.params.data_params import DataParams
 from roman.params.mapper_params import MapperParams
 from roman.params.fastsam_params import FastSAMParams
@@ -59,14 +60,25 @@ class ROMANMapRunner:
             self.t0 = self.img_data.t0
             self.tf = self.img_data.tf
 
-        if verbose: print("Loading depth data for time range {}...".format(self.time_range))
-        self.depth_data = self.data_params.load_depth_data()
-
         if verbose: print("Loading pose data...")
         self.camera_pose_data = self.data_params.load_pose_data()
+
+        if self.data_params.use_pointcloud:
+            if verbose: print("Loading point cloud data for time range {}...".format(self.time_range))
+            self.pointcloud_data = self.data_params.load_pointcloud_data()
+            self.align_pointcloud = AlignPointCloud(pointcloud_data=self.pointcloud_data,
+                                                    img_data=self.img_data,
+                                                    camera_pose_data=self.camera_pose_data,
+                                                    tf_bag_path=self.data_params.pose_data_params.params_dict['path']) # TODO: clean up?
+        else:
+            if verbose: print("Loading depth data for time range {}...".format(self.time_range))
+            self.depth_data = self.data_params.load_depth_data()
         
         if verbose: print("Setting up FastSAM...")
-        self.fastsam = FastSAMWrapper.from_params(self.fastsam_params, self.depth_data.camera_params)
+        self.fastsam = FastSAMWrapper.from_params(params=self.fastsam_params,
+                                                  depth_cam_params=self.img_data.camera_params if self.data_params.use_pointcloud else 
+                                                                   self.depth_data.camera_params,
+                                                  use_pointcloud=self.data_params.use_pointcloud) # TODO: clean up?
 
         # TODO: start here
         if verbose: print("Setting up ROMAN mapper...")
@@ -110,13 +122,18 @@ class ROMANMapRunner:
         try:
             img_t = self.img_data.nearest_time(t)
             img = self.img_data.img(img_t)
-            img_depth = self.depth_data.img(img_t)
-            pose_odom_camera = self.camera_pose_data.T_WB(img_t)
+            T_odom_camera = self.camera_pose_data.T_WB(img_t)
+            if self.data_params.use_pointcloud:
+                pcl = self.align_pointcloud.aligned_pointcloud(img_t)
+                pcl_proj  = self.align_pointcloud.projected_pointcloud(pcl)
+                depth_data = self.align_pointcloud.filter_pointcloud_and_projection(pcl, pcl_proj)
+            else:
+                depth_data = self.depth_data.img(img_t)
         except NoDataNearTimeException:
             return None, None, None, None
         
-        observations = self.fastsam.run(img_t, pose_odom_camera, img, img_depth=img_depth)
-        return img_t, observations, pose_odom_camera, img
+        observations = self.fastsam.run(img_t, T_odom_camera, img, depth_data=depth_data)
+        return img_t, observations, T_odom_camera, img
 
     def update_segment_track(self, t, observations, pose_odom_camera, img): 
 
