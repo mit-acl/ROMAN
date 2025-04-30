@@ -4,7 +4,7 @@
 #
 # Parameter class for data loading
 #
-# Authors: Mason Peterson
+# Authors: Mason Peterson, Qingyuan Li
 #
 # Dec. 21, 2024
 #
@@ -16,7 +16,7 @@ import yaml
 from typing import List, Tuple
 from functools import cached_property
 
-from robotdatapy.data import ImgData, PoseData
+from robotdatapy.data import ImgData, PoseData, PointCloudData
 from robotdatapy.transform import T_FLURDF, T_RDFFLU
 
 from roman.utils import expandvars_recursive
@@ -35,6 +35,16 @@ class ImgDataParams:
     def from_dict(cls, params_dict: dict):
         return cls(**params_dict)
     
+
+@dataclass
+class PointCloudDataParams:
+    path: str
+    topic: str
+
+    @classmethod
+    def from_dict(cls, params_dict: dict):
+        return cls(**params_dict)
+
 @dataclass
 class PoseDataParams:
     
@@ -62,6 +72,10 @@ class PoseDataParams:
             return self._find_transformation(self.T_odombase_camera_dict)
         else:
             return np.eye(4)
+        
+    @property
+    def odombase_frame(self) -> str:
+        return self.T_odombase_camera_dict['parent'] if not self.T_odombase_camera_dict['inv'] else self.T_odombase_camera_dict['child']
         
     def load_pose_data(self, extra_key_vals: dict) -> PoseData:
         """
@@ -119,7 +133,9 @@ class DataParams:
     
     img_data_params: ImgDataParams
     depth_data_params: ImgDataParams
+    pointcloud_data_params: PointCloudDataParams
     pose_data_params: PoseDataParams
+    use_pointcloud: bool = False
     dt: float = 1/6
     runs: list = None
     run_env: str = None
@@ -128,9 +144,9 @@ class DataParams:
     
     def __post_init__(self):
         if self.time_params is not None:
-            assert 'relative' in self.time_params['time'], "relative must be specified in params"
-            assert 't0' in self.time_params['time'], "t0 must be specified in params"
-            assert 'tf' in self.time_params['time'], "tf must be specified in params"
+            assert 'relative' in self.time_params, "relative must be specified in params"
+            assert 't0' in self.time_params, "t0 must be specified in params"
+            assert 'tf' in self.time_params, "tf must be specified in params"
         
     @classmethod
     def from_yaml(cls, yaml_path: str, run: str = None):
@@ -138,23 +154,28 @@ class DataParams:
             data = yaml.safe_load(f)
         if run is None:
             return cls(
-                None, None, None,
+                None, None, None, None,
+                use_pointcloud=data['depth_source'] == 'pointcloud' if 'depth_source' in data else \
+                            (data['use_pointcloud'] if 'use_pointcloud' in data else False),
                 dt=data['dt'] if 'dt' in data else 1/6,
                 runs=data['runs'] if 'runs' in data else None,
                 run_env=data['run_env'] if 'run_env' in data else None
             )
         elif run in data:
-            run_data = data[run]
+            run_data = {**data, **data[run]}
         else:
             run_data = data
         return cls(
             ImgDataParams.from_dict(run_data['img_data']),
-            ImgDataParams.from_dict(run_data['depth_data']),
+            ImgDataParams.from_dict(run_data['depth_data']) if 'depth_data' in run_data else None,
+            PointCloudDataParams.from_dict(run_data['pointcloud_data']) if 'pointcloud_data' in run_data else None,
             PoseDataParams.from_dict(run_data['pose_data']),
+            use_pointcloud=run_data['depth_source'] == 'pointcloud' if 'depth_source' in run_data else \
+                          (run_data['use_pointcloud'] if 'use_pointcloud' in run_data else False),
             dt=run_data['dt'] if 'dt' in run_data else 1/6,
             runs=data['runs'] if 'runs' in data else None,
             run_env=data['run_env'] if 'run_env' in data else None,
-            time_params=run_data['time_params'] if 'time_params' in run_data else None,
+            time_params=run_data['time'] if 'time' in run_data else None,
             kitti=run_data['kitti'] if 'kitti' in run_data else False
         )
         
@@ -178,6 +199,20 @@ class DataParams:
             
         return self.pose_data_params.load_pose_data(extra_key_vals)
         
+    def load_pointcloud_data(self) -> PointCloudData:
+        """
+        Loads point cloud data.
+
+        Returns:
+            PointCloudData: PointCloud 
+        """
+        return PointCloudData.from_bag(
+            path=expandvars_recursive(self.pointcloud_data_params.path),
+            topic=self.pointcloud_data_params.topic,
+            time_tol=self.dt / 2.0,
+            time_range=self.time_range
+        )
+
     def load_img_data(self) -> ImgData:
         """
         Loads image data.
